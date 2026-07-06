@@ -518,6 +518,8 @@ _BACKLOG_DIAGNOSTIC_KEYS = frozenset({
 _COMPONENT_SCORE_KEYS = (
     "weighted_module_recall",
     "module_recall",
+    "kind_recall",
+    "actual_kinds",
     "release_signaled",
     "release_predicted",
     "bump_actual",
@@ -581,9 +583,12 @@ def objective_component(objective: dict) -> float:
 
     Module recall always counts — the file-weighted recall (``weighted_module_recall``) is
     preferred when present, so the score reflects where change actually concentrated, and it
-    falls back to plain ``module_recall`` otherwise. Release-prediction and (when present)
-    bump-level correctness count only when there was actually a release to get right, so a
-    window with no release isn't scored on a trivial "predicted nothing" match.
+    falls back to plain ``module_recall`` otherwise. Commit-kind recall counts whenever the
+    window revealed any classifiable kinds to anticipate (#500: it is a documented axis of the
+    anchor but was previously produced and never wired into the composite — the same gap #215
+    fixed for ``weighted_module_recall``). Release-prediction and (when present) bump-level
+    correctness count only when there was actually a release to get right, so a window with no
+    release isn't scored on a trivial "predicted nothing" match.
 
     ``backlog_recall`` and its companion diagnostics are reported by :func:`objective_score`
     but are deliberately excluded here — backlog anticipation remains diagnostic-only (#148).
@@ -593,6 +598,10 @@ def objective_component(objective: dict) -> float:
     if recall is None:
         recall = obj.get("module_recall", 0.0)
     parts = [float(recall)]
+    # Commit-kind recall counts only when there were kinds to anticipate — mirroring the
+    # release/bump axes, so a window with no classifiable commits isn't scored on it.
+    if obj.get("actual_kinds"):
+        parts.append(float(obj.get("kind_recall", 0.0)))
     if obj.get("release_signaled"):
         parts.append(1.0 if obj.get("release_predicted") else 0.0)
     if obj.get("bump_actual") is not None:

@@ -128,9 +128,11 @@ def test_objective_component_uses_only_ranking_fields_from_full_objective_dict()
     )
     assert matched["backlog_recall"] == 0.0
     assert inflated["backlog_recall"] == 1.0
-    # weighted recall + release predicted + bump match
+    # weighted recall + kind recall + release predicted + bump match (backlog excluded, #148).
+    # The three dicts differ ONLY in backlog fields — the kind axis (#500) is identical across
+    # them — so their component must stay equal, which is exactly what #148 guarantees.
     expected = round(
-        (matched["weighted_module_recall"] + 1.0 + 1.0) / 3,
+        (matched["weighted_module_recall"] + matched["kind_recall"] + 1.0 + 1.0) / 4,
         3,
     )
     assert objective_component(missed) == expected
@@ -162,10 +164,40 @@ def test_objective_score_backlog_change_does_not_move_component_when_modules_mat
     ]
     revealed = [{"subject": "fix: memory leak under heavy load", "files": ["core/leak.py"]}]
     plan_match = [{"title": "Fix memory leak under load", "kind": "bugfix", "theme": "core"}]
-    plan_miss = [{"title": "Refactor core internals", "kind": "refactor", "theme": "core"}]
+    # Same module (core) and same kind (bugfix, matching the "fix:" commit) as plan_match, so the
+    # ONLY difference is backlog: this plan does not name the memory-leak issue. That isolates the
+    # #148 invariant now that module and kind recall both feed the component (#500).
+    plan_miss = [{"title": "Fix a separate core crash", "kind": "bugfix", "theme": "core"}]
     score_match = objective_score(plan_match, revealed, open_issues=open_issues)
     score_miss = objective_score(plan_miss, revealed, open_issues=open_issues)
     assert score_match["backlog_recall"] == 1.0
     assert score_miss["backlog_recall"] == 0.0
     assert score_match["module_recall"] == score_miss["module_recall"] == 1.0
+    assert score_match["kind_recall"] == score_miss["kind_recall"] == 1.0
     assert objective_component(score_match) == objective_component(score_miss) == 1.0
+
+
+def test_objective_component_rewards_commit_kind_recall():
+    # #500: kind_recall is a documented axis of the anchor but was never wired into the
+    # composite, so anticipating commit kinds didn't affect the score. A plan that nails the
+    # kinds must now outscore one that gets them all wrong, other things equal.
+    revealed = [
+        {"subject": "feat: add widgets", "files": ["widgets/a.py"]},
+        {"subject": "fix: crash on load", "files": ["core/x.py"]},
+    ]
+    good = objective_score([{"title": "ship features", "kind": "feature"},
+                            {"title": "fix bugs", "kind": "bugfix"}], revealed)
+    bad = objective_score([{"title": "write docs", "kind": "docs"}], revealed)
+    assert good["kind_recall"] == 1.0 and bad["kind_recall"] == 0.0
+    assert objective_component(good) > objective_component(bad)
+    assert composite_score("tie", good) > composite_score("tie", bad)
+
+
+def test_objective_component_skips_kind_axis_when_no_kinds_revealed():
+    # A window with no classifiable commit kinds (e.g. a bare merge) must not be scored on the
+    # kind axis — mirroring how the release/bump axes only count when applicable.
+    revealed = [{"subject": "Merge branch 'x'", "files": ["core/a.py"]}]
+    score = objective_score([{"title": "touch core", "kind": "feature", "theme": "core"}], revealed)
+    assert score["actual_kinds"] == []
+    # module recall is a perfect 1.0 and the kind axis is skipped, so the component stays 1.0.
+    assert objective_component(score) == 1.0
